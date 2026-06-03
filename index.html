@@ -758,6 +758,47 @@ var PRELOADED_INTEL = [
 ];
 
 // ═══════════════════════════════════════════════════════
+// SITE INTEL BOOST — populated by applyIntelBoosts()
+// ═══════════════════════════════════════════════════════
+var SITE_INTEL_BOOST = {};
+
+// Maps report location/site_signal strings → dashboard site names
+var LOCATION_TO_SITES = {
+  'Farnsworth':      ['Farnsworth Bank'],
+  'Farnsworth Bank': ['Farnsworth Bank'],
+  'Eagle Reef':      ['Eagle Reef'],
+  'Ship Rock':       ['Eagle Reef','East End'],
+  'Cat Head':        ['Cat Head'],
+  'Arrow Point':     ['Arrow Point'],
+  'Church Rock':     ['Church Rock'],
+  'East End':        ['East End'],
+  'Fence Line':      ['Fence Line'],
+  'Avalon':          ['Avalon'],
+  'Bird Rock':       ['East End','Church Rock'],
+  'Isthmus':         ['Cat Head'],
+  'Two Harbors':     ['Cat Head'],
+  'front side':      ['Eagle Reef','East End','Fence Line'],
+  'frontside':       ['Eagle Reef','East End','Fence Line'],
+  'back side':       ['Arrow Point','Cat Head'],
+  'backside':        ['Arrow Point','Cat Head'],
+  'west end':        ['Arrow Point','Cat Head'],
+  'Catalina':        ['Eagle Reef','Cat Head','Church Rock','East End','Fence Line','Arrow Point'],
+  'Offshore':        ['Farnsworth Bank','14 Mile Bank'],
+  'offshore':        ['Farnsworth Bank','14 Mile Bank']
+};
+
+function getSitesForReport(r) {
+  var sig = r.site_signal || '';
+  var loc = r.location || '';
+  var sites = LOCATION_TO_SITES[sig] || LOCATION_TO_SITES[loc] || [];
+  // If nothing specific, fall back to broad Catalina set for any Catalina report
+  if(!sites.length && (loc==='Catalina'||sig==='Catalina')) {
+    sites = LOCATION_TO_SITES['Catalina'];
+  }
+  return sites;
+}
+
+// ═══════════════════════════════════════════════════════
 // DATE HELPERS FOR STALENESS
 // ═══════════════════════════════════════════════════════
 function parseReportDate(dateStr) {
@@ -788,36 +829,78 @@ function intelFreshnessClass(daysOld) {
 // ═══════════════════════════════════════════════════════
 // FETCH FISHING REPORTS
 // ═══════════════════════════════════════════════════════
-function fetchFishingReports() {
-  var feed = document.getElementById('intel-feed');
+async function fetchFishingReports() {
+  var feed      = document.getElementById('intel-feed');
   var freshness = document.getElementById('intel-freshness');
-  if(feed) feed.innerHTML = '<div style="font-size:11px;color:var(--text3);font-family:var(--mono)">Loading…</div>';
+  if(feed) feed.innerHTML = '<div style="font-size:11px;color:var(--text3);font-family:var(--mono)"><span style="display:inline-block;width:10px;height:10px;border:2px solid var(--bg4);border-top-color:rgba(106,74,170,0.8);border-radius:50%;animation:spin 0.8s linear infinite;margin-right:6px;vertical-align:middle"></span>Fetching live reports via Claude…</div>';
+  if(freshness) { freshness.textContent = 'fetching…'; freshness.className = 'badge badge-neutral'; }
 
-  setTimeout(function() {
-    // Find freshest report date
-    var minAge = PRELOADED_INTEL.reduce(function(min, r) {
-      var age = reportDaysAgo(r.date);
-      return age < min ? age : min;
-    }, 999);
+  var INTEL_SYSTEM = 'You are a fishing intelligence parser for a Southern California spearfishing dashboard targeting Catalina Island out of Long Beach (Davies Launch, SeaSport 22).\n\nSearch and fetch the LATEST fishing reports from ALL of these sources:\n1. https://www.976-tuna.com/playground/posts — LA/OC party boat counts and reports\n2. https://www.bdoutdoors.com/forums/forum/southern-california-offshore-fishing-reports/ — private boat reports including kayak/skiff Catalina trips\n\nReturn ONLY a valid JSON array — no markdown fences, no preamble, no explanation. Start with [ end with ].\n\nFor each relevant report use EXACTLY this structure:\n{"date":"Jun 2","boat":"Victory","species":"Yellowtail","detail":"one-line description","location":"Catalina","site_signal":"Eagle Reef","key":"yellowtail","boost":3,"source":"976-TUNA"}\n\nFields:\n- date: "Mon DD" format\n- location: broad area — "Catalina" | "Offshore" | "San Clemente" | "Local" | "Ventura"\n- site_signal: specific Catalina landmark if mentioned — "Eagle Reef"|"Ship Rock"|"Farnsworth"|"Arrow Point"|"Church Rock"|"Cat Head"|"Avalon"|"East End"|"Bird Rock"|"Isthmus"|"Two Harbors"|"front side"|"back side"|"west end" — or null if not mentioned\n- key: "yellowtail"|"bluefin"|"dorado"|"wsb"|"tuna"|null\n- boost: 3=strong positive, 2=moderate positive, 1=weak, 0=neutral, -1=negative/cold/no fish\n- source: "976-TUNA"|"BloodyDecks"\n\nRules:\n- LA/OC area only — include Ventura if Catalina-bound boats\n- Spearfishing targets: yellowtail, bluefin, dorado, white seabass, school tuna\n- ALWAYS include cold/no-life/water-temp-drop reports as boost -1 — these are critical\n- Note if specific Catalina spots are mentioned (Ship Rock, Eagle Reef, etc)\n- Skip pure rockfish/sculpin trips unless they note specific conditions\n- Maximum 12 reports total, most recent first\n- Return ONLY the JSON array';
 
-    renderIntelFeed(PRELOADED_INTEL);
-    applyIntelBoosts(PRELOADED_INTEL);
+  try {
+    var messages = [{ role:'user', content:'Fetch and parse the latest fishing reports from 976-TUNA playground/posts AND BloodyDecks Southern California reports. Return only the JSON array.' }];
+    var result = null;
 
-    if(freshness) {
-      var age = minAge;
-      if(age <= 5) {
-        freshness.textContent = age+'d ago';
-        freshness.className = 'badge badge-go';
-      } else if(age <= 12) {
-        freshness.textContent = age+'d ago — dated';
-        freshness.className = 'badge badge-warn';
+    for(var turn=0; turn<6; turn++) {
+      var res = await fetch('https://api.anthropic.com/v1/messages', {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json' },
+        body: JSON.stringify({
+          model:'claude-sonnet-4-20250514',
+          max_tokens:1000,
+          tools:[{ type:'web_search_20250305', name:'web_search' }],
+          system: INTEL_SYSTEM,
+          messages: messages
+        })
+      });
+      var data = await res.json();
+
+      if(data.stop_reason === 'end_turn') {
+        result = (data.content||[]).filter(function(b){ return b.type==='text'; }).map(function(b){ return b.text; }).join('');
+        break;
+      }
+      if(data.stop_reason === 'tool_use') {
+        var toolResults = (data.content||[])
+          .filter(function(b){ return b.type==='tool_use'; })
+          .map(function(b){ return { type:'tool_result', tool_use_id:b.id, content:'Search executed.' }; });
+        messages.push({ role:'assistant', content:data.content });
+        if(toolResults.length) messages.push({ role:'user', content:toolResults });
       } else {
-        freshness.textContent = age+'d ago — stale';
-        freshness.className = 'badge badge-stop';
+        result = (data.content||[]).filter(function(b){ return b.type==='text'; }).map(function(b){ return b.text; }).join('');
+        break;
       }
     }
+
+    if(!result) throw new Error('No response');
+    var clean = result.replace(/```json|```/g,'').trim();
+    var s = clean.indexOf('['), e = clean.lastIndexOf(']');
+    if(s>=0 && e>s) clean = clean.slice(s,e+1);
+    var reports = JSON.parse(clean);
+
+    PRELOADED_INTEL = reports;
+    renderIntelFeed(reports);
+    applyIntelBoosts(reports);
+
+    var minAge = reports.reduce(function(min,r){ var a=reportDaysAgo(r.date); return a<min?a:min; }, 999);
+    if(freshness) {
+      freshness.textContent = minAge<=1?'today':minAge+'d ago';
+      freshness.className = 'badge '+(minAge<=1||minAge<=5?'badge-go':minAge<=12?'badge-warn':'badge-stop');
+    }
     runEvalOnly();
-  }, 350);
+
+  } catch(err) {
+    console.warn('Live intel fetch failed:', err);
+    renderIntelFeed(PRELOADED_INTEL);
+    applyIntelBoosts(PRELOADED_INTEL);
+    if(feed) {
+      var errNote = document.createElement('div');
+      errNote.style.cssText = 'margin-top:6px;font-family:var(--mono);font-size:10px;color:var(--stop)';
+      errNote.textContent = '⚠ Live fetch failed — showing cached data';
+      feed.prepend(errNote);
+    }
+    if(freshness) { freshness.textContent='cached'; freshness.className='badge badge-warn'; }
+    runEvalOnly();
+  }
 }
 
 function renderIntelFeed(reports) {
@@ -851,41 +934,74 @@ function renderIntelFeed(reports) {
   if(impact) {
     var lines = [];
     if(FISHING_INTEL.yellowtail.confirmed) {
-      lines.push('<span style="color:var(--go)">✓ YT confirmed at Catalina</span> — ' + FISHING_INTEL.yellowtail.recency);
+      lines.push('<span style="color:var(--go)">✓ YT confirmed</span> — ' + FISHING_INTEL.yellowtail.recency);
     } else if(PRELOADED_INTEL.some(function(r){ return r.key==='yellowtail' && r.boost>=2; })) {
       var ytAge = PRELOADED_INTEL.filter(function(r){ return r.key==='yellowtail' && r.boost>=2; })
         .reduce(function(min,r){ var a=reportDaysAgo(r.date); return a<min?a:min; }, 999);
-      lines.push('<span style="color:var(--warn)">⚠ YT intel ' + ytAge + 'd old</span> — verify current conditions');
+      lines.push('<span style="color:var(--warn)">⚠ YT intel ' + ytAge + 'd old</span> — verify');
     }
     if(FISHING_INTEL.bluefin.confirmed) {
-      lines.push('<span style="color:var(--warn)">⚠ Bluefin offshore</span> — 120-lb class, float system risk');
+      lines.push('<span style="color:var(--warn)">⚠ Bluefin offshore</span> — float system risk');
+    }
+    // Show top hot sites from intel
+    var hotSites = Object.keys(SITE_INTEL_BOOST)
+      .filter(function(k){ return SITE_INTEL_BOOST[k].score >= 3; })
+      .sort(function(a,b){ return SITE_INTEL_BOOST[b].score - SITE_INTEL_BOOST[a].score; });
+    if(hotSites.length) {
+      lines.push('<span style="color:var(--go)">↑ Intel signal:</span> ' + hotSites.slice(0,2).join(', '));
+    }
+    var coldSites = Object.keys(SITE_INTEL_BOOST)
+      .filter(function(k){ return SITE_INTEL_BOOST[k].score < 0; });
+    if(coldSites.length) {
+      lines.push('<span style="color:var(--stop)">↓ Cold reports:</span> ' + coldSites.join(', '));
     }
     var coldReport = PRELOADED_INTEL.find(function(r){ return r.boost < 0; });
-    if(coldReport) {
-      lines.push('<span style="color:var(--stop)">↓ Cold upwelling noted</span> at ' + coldReport.location);
+    if(coldReport && !coldSites.length) {
+      lines.push('<span style="color:var(--stop)">↓ Cold noted</span> at ' + coldReport.location);
     }
     impact.innerHTML = lines.length ? lines.join('<br>') : 'No significant species signals';
   }
 }
 
 function applyIntelBoosts(reports) {
+  // Reset species intel
   Object.keys(FISHING_INTEL).forEach(function(k) {
     FISHING_INTEL[k].confirmed = false;
     FISHING_INTEL[k].count = 0;
     FISHING_INTEL[k].daysOld = 999;
   });
+  // Reset site intel
+  SITE_INTEL_BOOST = {};
+
   reports.forEach(function(r) {
+    var age       = reportDaysAgo(r.date);
+    var freshness = intelFreshnessClass(age);
+
+    // Species signals
     if(r.key && r.boost >= 2) {
-      var age = reportDaysAgo(r.date);
-      var freshness = intelFreshnessClass(age);
       if(age < FISHING_INTEL[r.key].daysOld) FISHING_INTEL[r.key].daysOld = age;
-      // Only CONFIRM if report is fresh (≤5 days)
       if(freshness === 'fresh') {
         FISHING_INTEL[r.key].confirmed = true;
         FISHING_INTEL[r.key].count++;
         FISHING_INTEL[r.key].location = r.location;
-        FISHING_INTEL[r.key].recency = r.date + ' (' + age + 'd ago)';
+        FISHING_INTEL[r.key].recency  = r.date + ' (' + age + 'd ago)';
       }
+    }
+
+    // Site-specific signals — stale reports still carry weight (decay applied)
+    if(freshness !== 'stale') {
+      var sites     = getSitesForReport(r);
+      var decayedBoost = freshness === 'fresh' ? r.boost : Math.round(r.boost * 0.5);
+      sites.forEach(function(siteName) {
+        if(!SITE_INTEL_BOOST[siteName]) SITE_INTEL_BOOST[siteName] = { score:0, notes:[] };
+        SITE_INTEL_BOOST[siteName].score += decayedBoost;
+        if(Math.abs(r.boost) >= 2) {
+          var src = r.source ? ' ['+r.source+']' : '';
+          SITE_INTEL_BOOST[siteName].notes.push(
+            (r.boost>0?'✓ ':'↓ ') + r.species + ' · ' + r.date + ' (' + age + 'd)' + src
+          );
+        }
+      });
     }
   });
 }
@@ -913,7 +1029,7 @@ function setLiveStatus(state, msg) {
   if(label) { label.textContent = msg; label.style.color = c; }
   if(bdot)  { bdot.style.background = c; }
   if(btitle){ btitle.style.color = c; btitle.textContent = state==='ok'?'Live data loaded':state==='loading'?'Fetching…':state==='partial'?'Partial data loaded':'Fetch failed'; }
-  if(bsub && state==='ok') bsub.textContent = 'Auto-populated from Open-Meteo + NOAA — '+new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})+'. SST, water color, Chl-a, and shark fields may need manual review.';
+  if(bsub && state==='ok') bsub.textContent = 'Live data loaded — '+new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})+'. Water color and Chl-a may need manual review.';
   var banner = document.getElementById('live-banner');
   if(banner) banner.style.display = 'flex';
 }
@@ -942,7 +1058,7 @@ async function fetchLiveData() {
   document.getElementById('sca').value          = '0';
   document.getElementById('fog').value          = '0';
   document.getElementById('afternoon-wind').value = '10';
-  document.getElementById('sst').value          = '67';
+  document.getElementById('sst').value          = '64';
   document.getElementById('wcolor').value       = '4';
   document.getElementById('tbreak').value       = '2';
   document.getElementById('chla').value         = '0.35';
@@ -959,12 +1075,12 @@ async function fetchLiveData() {
   buildDayGrid();
   runEvalOnly();
 
-  var results = { marine:false, wind:false, chla:false, sca:false };
+  var results = { marine:false, sst:false, wind:false, chla:false, sca:false };
 
   // 1. OPEN-METEO MARINE
   try {
     var marineUrl = 'https://marine-api.open-meteo.com/v1/marine?latitude='+CAT_LAT+'&longitude='+CAT_LON
-      +'&hourly=wave_height,wave_direction,wave_period,swell_wave_height,swell_wave_direction,swell_wave_period,sea_surface_temperature'
+      +'&hourly=wave_height,wave_direction,wave_period,swell_wave_height,swell_wave_direction,swell_wave_period'
       +'&daily=wave_height_max,wave_period_max,wave_direction_dominant,swell_wave_height_max,swell_wave_period_max'
       +'&forecast_days=7&timezone=America%2FLos_Angeles';
     var mRes = await fetch(marineUrl);
@@ -981,17 +1097,6 @@ async function fetchLiveData() {
     var waveDeg = h.wave_direction[hourIdx]||h.wave_direction[0]||270;
     document.getElementById('swell-dir').value = degToCompass(waveDeg);
 
-    var sstC = h.sea_surface_temperature ? (h.sea_surface_temperature[hourIdx]||h.sea_surface_temperature[0]) : null;
-    if(sstC !== null && sstC !== undefined) {
-      var sstF = parseFloat((sstC*9/5+32).toFixed(1));
-      document.getElementById('sst').value = sstF;
-      // Auto-assign water color from SST
-      var autoColor = sstF>=70?'5':sstF>=67?'4':sstF>=64?'3':sstF>=61?'2':'1';
-      document.getElementById('wcolor').value = autoColor;
-      WCOLOR_IS_AUTO = true;
-      showAutoFlag('wcolor-auto');
-    }
-
     window._marineDaily = mData.daily;
     results.marine = true;
     addSourceBadge('Open-Meteo Marine', true);
@@ -1000,7 +1105,54 @@ async function fetchLiveData() {
     addSourceBadge('Open-Meteo Marine', false);
   }
 
-  // 2. OPEN-METEO WIND
+  // 2. NDBC BUOY SST — via CoastWatch ERDDAP (CORS-enabled)
+  // Priority: 46222 San Pedro (Catalina approach) → 46025 Santa Monica Basin → 46251 Santa Monica Bay
+  try {
+    var NDBC_BUOYS = [
+      { id:'46222', name:'San Pedro' },
+      { id:'46025', name:'Santa Monica Basin' },
+      { id:'46251', name:'Santa Monica Bay' }
+    ];
+    var sstResult = null;
+    var yesterday = new Date(Date.now()-86400000).toISOString().split('T')[0];
+    for(var bi=0; bi<NDBC_BUOYS.length; bi++) {
+      try {
+        var buoyId = NDBC_BUOYS[bi].id;
+        var buoyName = NDBC_BUOYS[bi].name;
+        var sstUrl = 'https://coastwatch.pfeg.noaa.gov/erddap/tabledap/cwwcNDBCMet.json'
+          +'?station,time,wtmp&station=%22'+buoyId+'%22'
+          +'&time>='+yesterday+'T00:00:00Z'
+          +'&orderByMax(%22time%22)';
+        var sRes = await fetch(sstUrl);
+        var sData = await sRes.json();
+        if(sData.table && sData.table.rows && sData.table.rows.length > 0) {
+          var cols = sData.table.columnNames;
+          var wtmpIdx = cols.indexOf('wtmp');
+          var wtmpC = parseFloat(sData.table.rows[0][wtmpIdx]);
+          if(!isNaN(wtmpC) && wtmpC > 5 && wtmpC < 35) {
+            sstResult = { f: parseFloat((wtmpC*9/5+32).toFixed(1)), buoy: buoyId, name: buoyName };
+            break;
+          }
+        }
+      } catch(be) { console.warn('Buoy '+NDBC_BUOYS[bi].id+' failed:', be); }
+    }
+    if(sstResult) {
+      document.getElementById('sst').value = sstResult.f;
+      var autoColor = sstResult.f>=70?'5':sstResult.f>=67?'4':sstResult.f>=64?'3':sstResult.f>=61?'2':'1';
+      document.getElementById('wcolor').value = autoColor;
+      WCOLOR_IS_AUTO = true;
+      showAutoFlag('wcolor-auto');
+      results.sst = true;
+      addSourceBadge('NDBC '+sstResult.buoy+' SST', true);
+    } else {
+      addSourceBadge('NDBC SST', false);
+    }
+  } catch(e) {
+    console.warn('NDBC SST fetch failed:', e);
+    addSourceBadge('NDBC SST', false);
+  }
+
+  // 4. OPEN-METEO WIND
   try {
     var windUrl = 'https://api.open-meteo.com/v1/forecast?latitude='+LB_LAT+'&longitude='+LB_LON
       +'&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m'
@@ -1026,7 +1178,7 @@ async function fetchLiveData() {
     addSourceBadge('Open-Meteo Wind', false);
   }
 
-  // 3. NOAA CoastWatch ERDDAP — Chl-a
+  // 5. NOAA CoastWatch ERDDAP — Chl-a
   try {
     var chlaUrl = 'https://coastwatch.pfeg.noaa.gov/erddap/griddap/erdMH1chla8day.json'
       +'?chlorophyll%5B(last)%5D%5B('+CAT_LAT+'):1:('+CAT_LAT+')%5D%5B('+CAT_LON+'):1:('+CAT_LON+')%5D';
@@ -1049,7 +1201,7 @@ async function fetchLiveData() {
     // Seeded flag remains
   }
 
-  // 4. NOAA Alerts — SCA check
+  // 6. NOAA Alerts — SCA check
   try {
     var alertUrl = 'https://api.weather.gov/alerts/active?zone=PZZ655';
     var aRes = await fetch(alertUrl, { headers:{'User-Agent':'CatalinaMissionDashboard/2.0'} });
@@ -1066,11 +1218,12 @@ async function fetchLiveData() {
     addSourceBadge('NOAA Alerts', false);
   }
 
-  var allOk    = results.marine && results.wind && results.sca;
-  var anyOk    = results.marine || results.wind || results.chla || results.sca;
+  var allOk    = results.marine && results.sst && results.wind && results.sca;
+  var anyOk    = results.marine || results.sst || results.wind || results.chla || results.sca;
   var state    = allOk?'ok':anyOk?'partial':'error';
   setLiveStatus(state, allOk?'live':anyOk?'partial':'fetch failed');
   if(btn) { btn.textContent = allOk?'✓ LIVE':'⚠ PARTIAL'; btn.disabled = false; }
+  if(bsub && state==='ok') bsub.textContent = 'Open-Meteo (waves) + NDBC buoy (SST) + NOAA — '+new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})+'. Water color and Chl-a may need manual review.';
 
   runEval();
 }
@@ -1528,23 +1681,38 @@ function runEvalOnly() {
   sl.innerHTML = '';
   var filtered = SITES.filter(function(s){ return zoneFilter==='all'||s.zone===zoneFilter; });
   var scored = filtered.map(function(s) {
-    var visOk  = vis.total >= s.minVis;
-    var sstOk  = sst >= s.minSST;
-    var chlaOk = chla <= s.maxChla;
-    var score  = (visOk?3:0)+(sstOk?2:0)+(chlaOk?2:0);
-    var cls    = score>=6?'go':score>=4?'warn':'stop';
-    var status = score>=6?'GO':score>=4?'MARGINAL':'SKIP';
-    return Object.assign({}, s, { score, cls, status });
+    var visOk      = vis.total >= s.minVis;
+    var sstOk      = sst >= s.minSST;
+    var chlaOk     = chla <= s.maxChla;
+    var intelData  = SITE_INTEL_BOOST[s.name] || { score:0, notes:[] };
+    var intelScore = Math.max(-2, Math.min(3, intelData.score));
+    var baseScore  = (visOk?3:0) + (sstOk?2:0) + (chlaOk?2:0);
+    var score      = baseScore + intelScore;
+    var cls        = score>=6?'go':score>=4?'warn':'stop';
+    var status     = score>=7?'HOT':score>=6?'GO':score>=4?'MARGINAL':'SKIP';
+    return Object.assign({}, s, { score, cls, status, intelData });
   });
   scored.sort(function(a,b){ return b.score-a.score; });
   scored.slice(0,8).forEach(function(s,i) {
+    var hasIntel   = s.intelData && s.intelData.notes && s.intelData.notes.length > 0;
+    var intelPos   = s.intelData && s.intelData.score > 0;
+    var intelNeg   = s.intelData && s.intelData.score < 0;
+    var intelBadge = '';
+    if(hasIntel) {
+      var tip = s.intelData.notes.slice(0,2).join(' | ');
+      intelBadge = '<span class="badge '+(intelPos?'badge-go':intelNeg?'badge-stop':'badge-neutral')+'" style="font-size:9px" title="'+tip+'">'
+        +(intelPos?'▲ intel':'▼ intel')+'</span>';
+    }
+    var hotBadge = s.status==='HOT' ? '<span class="badge badge-go" style="font-size:9px;background:rgba(34,201,135,0.25)">🔥 hot</span>' : '';
     var row = document.createElement('div');
     row.className = 'site-row '+s.cls;
+    row.title = hasIntel ? s.intelData.notes.join('\n') : '';
     row.innerHTML =
       '<span class="site-rank">'+(i+1)+'</span>'+
       '<div style="flex:1">'+
-        '<div class="site-name">'+s.name+'</div>'+
+        '<div class="site-name" style="display:flex;align-items:center;gap:6px">'+s.name+hotBadge+intelBadge+'</div>'+
         '<div class="site-species">'+s.species.join(' · ')+'</div>'+
+        (hasIntel ? '<div style="font-family:var(--mono);font-size:9px;color:'+(intelPos?'var(--go)':intelNeg?'var(--stop)':'var(--text3)')+';margin-top:2px">'+s.intelData.notes[0]+'</div>' : '')+
       '</div>'+
       '<span class="site-gps">'+s.gps+'</span>'+
       '<span class="badge badge-blue" style="font-size:9px">'+s.note+'</span>'+
