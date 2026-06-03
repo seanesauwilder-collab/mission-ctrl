@@ -711,6 +711,10 @@ var CAT_LON  = -118.33;
 var LB_LAT   = 33.77;
 var LB_LON   = -118.19;
 
+// ★ SET THIS to your Cloudflare Worker URL after deploying worker.js
+// Example: 'https://missionctrl-proxy.YOUR-NAME.workers.dev'
+var PROXY_URL = 'https://missionctrl-proxy.seanesauwilder-collab.workers.dev';
+
 var CHLA_IS_SEEDED  = false;
 var WCOLOR_IS_AUTO  = false;
 var ACTIVE_DAY      = 0;
@@ -842,7 +846,7 @@ async function fetchFishingReports() {
     var result = null;
 
     for(var turn=0; turn<6; turn++) {
-      var res = await fetch('https://api.anthropic.com/v1/messages', {
+      var res = await fetch(PROXY_URL, {
         method:'POST',
         headers:{ 'Content-Type':'application/json' },
         body: JSON.stringify({
@@ -1872,7 +1876,7 @@ async function runAIEval() {
   if(gradeBadge) gradeBadge.style.display = 'none';
 
   try {
-    var response = await fetch('https://api.anthropic.com/v1/messages', {
+    var response = await fetch(PROXY_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
