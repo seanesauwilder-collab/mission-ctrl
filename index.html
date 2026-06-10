@@ -875,7 +875,11 @@ async function fetchFishingReports() {
       }
     }
 
-    if(!result) throw new Error('No response');
+    if(!result) {
+      // Check for API-level error (rate limit, auth, etc)
+      if(data && data.error) throw new Error('API: ' + data.error.message);
+      throw new Error('No response from API');
+    }
     var clean = result.replace(/```json|```/g,'').trim();
     var s = clean.indexOf('['), e = clean.lastIndexOf(']');
     if(s>=0 && e>s) clean = clean.slice(s,e+1);
@@ -899,7 +903,7 @@ async function fetchFishingReports() {
     if(feed) {
       var errNote = document.createElement('div');
       errNote.style.cssText = 'margin-top:6px;font-family:var(--mono);font-size:10px;color:var(--stop)';
-      errNote.textContent = '⚠ Live fetch failed — showing cached data';
+      errNote.textContent = '⚠ ' + (err.message || 'Live fetch failed') + ' — showing cached data';
       feed.prepend(errNote);
     }
     if(freshness) { freshness.textContent='cached'; freshness.className='badge badge-warn'; }
@@ -1370,14 +1374,30 @@ fishProb = function(sst, chla, zone) {
 };
 
 function gunRec(zone, sst, chla) {
-  if(zone==='paddy') {
-    if(sst>=70 && chla<=0.6) return { name:'72" Wong Ono',    note:'School tuna / large YT expected' };
-    return                         { name:'55" Wong Hybrid', note:'Primary paddy gun — dorado, YT, tuna' };
+  // Sean's actual loadout:
+  // 55" Wong Hybrid        — reef edges, kelp, general
+  // 65" Wong Hybrid        — bluewater/paddy, float system
+  // 55" Ulusub             — reef/structure tight quarters
+  // 40" Riffe              — low vis / halibut
+  // 55" Riffe Metal Tech   — structure alternative
+
+  if(zone==='paddy' || zone==='bluewater') {
+    if(sst>=70 && chla<=0.6) return { name:'65" Wong Hybrid', note:'Bluewater paddy — long range, float system rigged, dorado/YT/tuna' };
+    return                          { name:'65" Wong Hybrid', note:'Primary paddy gun — float system, bluewater pelagics' };
   }
-  if(zone==='farnsworth') return   { name:'55" Wong Hybrid', note:'Seamount bluewater — Hybrid primary, Ono if YT confirmed' };
-  if(zone==='reef')        return   { name:'50" Ulusub',      note:'Reef/structure — tight quarters' };
-  if(zone==='kelp')        return   { name:'50" Ulusub',      note:'Kelp zone — WSB and bass at structure' };
-  return                           { name:'55" Wong Hybrid', note:'General purpose — mainland reef and kelp' };
+  if(zone==='farnsworth') return    { name:'65" Wong Hybrid', note:'Seamount bluewater — float system; swap to 55" Hybrid for reef edges' };
+  if(zone==='reef') {
+    if(chla > 0.8) return           { name:'55" Riffe Metal Tech', note:'Reef/structure — Metal Tech handles murky water better' };
+    return                          { name:'55" Ulusub',      note:'Reef/structure — tight quarters, WSB and YT' };
+  }
+  if(zone==='kelp') {
+    var vis = chla <= 0.4;
+    if(!vis) return                 { name:'40" Riffe',       note:'Low vis kelp — short gun for halibut and close-range bass' };
+    return                          { name:'55" Ulusub',      note:'Kelp zone — WSB, kelp bass at structure' };
+  }
+  // Mainland / low vis default
+  if(chla > 1.0) return             { name:'40" Riffe',       note:'Low vis / halibut — short gun, tight shots' };
+  return                            { name:'55" Wong Hybrid', note:'General reef/kelp — swap to 40" Riffe if vis drops below 10 ft' };
 }
 
 function islandSide(swellDir) {
@@ -1778,9 +1798,11 @@ Score: 80-100=GO optimal (50-80ft+) | 65-79=GO good (30-50ft) | 48-64=CAUTION (1
 
 FISH PROBABILITY:
 • Yellowtail: SST ≥64°F rising, Chl-a ≤0.8, best at structure/kelp edge
-• Dorado: SST ≥70°F firm, blue offshore water, June-October peak — gun: 55" Hybrid
-• School tuna/bluefin: SST ≥68°F, offshore blue — gun: 72" Ono
-• WSB: SST 58-68°F, kelp/structure, dawn/dusk primarily — gun: 50" Ulusub
+• Dorado: SST ≥70°F firm, blue offshore water, June-October peak — gun: 65" Wong Hybrid (float system)
+• School tuna/bluefin: SST ≥68°F, offshore blue — gun: 65" Wong Hybrid (float system)
+• Yellowtail reef/kelp: gun: 55" Wong Hybrid or 55" Ulusub
+• WSB: SST 58-68°F, kelp/structure, dawn/dusk primarily — gun: 55" Ulusub or 55" Riffe Metal Tech
+• Halibut/low vis: gun: 40" Riffe
 • CRITICAL WSB ID: rusty bronze, yellow fin tips, dark spot at pectoral base. Black Seabass (NO-TAKE): gray/black with spots, large shoulders, no yellow fins.
 Paddy/bluewater: SST≥70+Chl≤0.3=HIGH | SST≥67+Chl≤0.6=MODERATE | SST≥64+Chl≤1.0=LOW
 Farnsworth: SST≥67+Chl≤0.6=HIGH | SST≥64=MODERATE
