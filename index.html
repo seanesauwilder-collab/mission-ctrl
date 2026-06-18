@@ -816,22 +816,54 @@ var PRELOADED_INTEL = [
   { date:'May 23', boat:'Victory', species:'Calico Bass', detail:'Catalina — calico, bonita, rockfish. YT went 0/1', location:'Catalina', key:'yellowtail', boost:1 }
 ];
 
-function fetchFishingReports() {
+async function fetchFishingReports() {
   var feed = document.getElementById('intel-feed');
   var freshness = document.getElementById('intel-freshness');
-  if(feed) feed.innerHTML = '<div style="font-size:12px;color:var(--text3);font-family:var(--mono)">Loading…</div>';
+  if(feed) feed.innerHTML = '<div style="font-size:12px;color:var(--text3);font-family:var(--mono)">Loading live 976-TUNA…</div>';
 
-  // Use preloaded intel (976-TUNA scraped reports — browser CORS blocks live fetch)
-  // In a hosted version this would call a proxy endpoint
-  setTimeout(function() {
+  // Live intel: the worker scrapes 976-tuna.com/playground/posts server-side
+  // (browser CORS blocks a direct fetch to 976-tuna). Falls back to seeded
+  // PRELOADED_INTEL if the worker is unreachable so the panel is never blank.
+  try {
+    var res = await fetch(WORKER_URL + '/fish-intel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source: 'long-beach' })
+    });
+    if(!res.ok) throw new Error('worker /fish-intel ' + res.status);
+    var data = await res.json();
+    var reports = data.reports || (data.fishIntel && data.fishIntel.reports) || [];
+    if(!reports.length) throw new Error('no reports returned');
+
+    PRELOADED_INTEL = reports.map(function(r){
+      return {
+        date:     r.date     || 'Recent',
+        boat:     r.boat     || '\u2014',
+        species:  r.species  || r.key || 'Fish',
+        detail:   r.detail   || '',
+        location: r.location || 'Local',
+        key:      r.key      || null,
+        boost:    (r.boost != null) ? r.boost : 1
+      };
+    });
     renderIntelFeed(PRELOADED_INTEL);
     applyIntelBoosts(PRELOADED_INTEL);
     if(freshness) {
-      freshness.textContent = 'Updated May 24';
+      freshness.textContent = 'Live \u00b7 ' + new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
       freshness.className = 'badge badge-go';
     }
     runEvalOnly();
-  }, 400);
+  } catch(e) {
+    console.error('Fish intel fetch failed:', e);
+    // Fall back to last-known seeded intel so the panel isn't blank
+    renderIntelFeed(PRELOADED_INTEL);
+    applyIntelBoosts(PRELOADED_INTEL);
+    if(freshness) {
+      freshness.textContent = 'offline \u2014 seeded';
+      freshness.className = 'badge badge-warn';
+    }
+    runEvalOnly();
+  }
 }
 
 function renderIntelFeed(reports) {
