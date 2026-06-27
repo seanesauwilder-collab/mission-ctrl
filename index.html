@@ -822,18 +822,26 @@ async function fetchFishingReports() {
   if(feed) feed.innerHTML = '<div style="font-size:12px;color:var(--text3);font-family:var(--mono)">Loading live 976-TUNA…</div>';
 
   // Live intel: the worker scrapes 976-tuna.com/playground/posts server-side
-  // (browser CORS blocks a direct fetch to 976-tuna). Falls back to seeded
-  // PRELOADED_INTEL if the worker is unreachable so the panel is never blank.
-  try {
-    var res = await fetch(WORKER_URL + '/fish-intel', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source: 'long-beach' })
-    });
-    if(!res.ok) throw new Error('worker /fish-intel ' + res.status);
+  // (browser CORS blocks a direct fetch to 976-tuna). Tries POST first, then
+  // GET (in case the worker route is GET-only). On failure it shows the REAL
+  // error in the panel so the problem is visible instead of silently hidden.
+  async function hit(method) {
+    var opts = (method === 'POST')
+      ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source: 'long-beach' }) }
+      : { method: 'GET' };
+    var res = await fetch(WORKER_URL + '/fish-intel', opts);
+    if(!res.ok) throw new Error('HTTP ' + res.status + ' (' + method + ')');
     var data = await res.json();
+    if(data.error && (!data.reports || !data.reports.length)) throw new Error(data.error);
     var reports = data.reports || (data.fishIntel && data.fishIntel.reports) || [];
-    if(!reports.length) throw new Error('no reports returned');
+    if(!reports.length) throw new Error('worker returned 0 reports');
+    return reports;
+  }
+
+  try {
+    var reports;
+    try { reports = await hit('POST'); }
+    catch(ePost) { console.warn('POST /fish-intel failed, retrying GET:', ePost.message); reports = await hit('GET'); }
 
     PRELOADED_INTEL = reports.map(function(r){
       return {
@@ -855,9 +863,15 @@ async function fetchFishingReports() {
     runEvalOnly();
   } catch(e) {
     console.error('Fish intel fetch failed:', e);
-    // Fall back to last-known seeded intel so the panel isn't blank
+    // Show the REAL reason in the panel + badge so it's debuggable at a glance.
     renderIntelFeed(PRELOADED_INTEL);
     applyIntelBoosts(PRELOADED_INTEL);
+    if(feed) {
+      var note = document.createElement('div');
+      note.style.cssText = 'font-size:11px;color:var(--stop);font-family:var(--mono);margin-top:8px;padding:6px;border:1px solid var(--stop-border);border-radius:4px';
+      note.textContent = 'intel offline: ' + e.message + ' \u2014 showing seeded data';
+      feed.appendChild(note);
+    }
     if(freshness) {
       freshness.textContent = 'offline \u2014 seeded';
       freshness.className = 'badge badge-warn';
@@ -995,9 +1009,9 @@ async function fetchLiveData() {
   document.getElementById('chla-trend').value  = '3';   // decreasing — water warming daily per reports
   document.getElementById('upwell').value      = '0';
   document.getElementById('rain').value        = '0';
-  // Run eval immediately with seeded conditions so dashboard is never blank
-  buildDayGrid();
-  runEvalOnly();
+  // Run eval immediately with seeded conditions so dashboard is never blank.
+  // Guarded: a hiccup here must NOT abort the live fetches below.
+  try { buildDayGrid(); runEvalOnly(); } catch(e){ console.error('seed eval failed (non-fatal):', e); }
 
   var results = { marine: false, wind: false, chla: false, sca: false };
 
@@ -1111,7 +1125,10 @@ async function fetchLiveData() {
   // ── 4. NOAA Alerts API: Small Craft Advisory check for San Pedro Channel (PZZ655)
   try {
     var alertUrl = 'https://api.weather.gov/alerts/active?zone=PZZ655';
-    var aRes = await fetch(alertUrl, { headers: { 'User-Agent': 'CatalinaMissionDashboard/1.0' } });
+    // NOTE: browsers FORBID setting User-Agent (it's silently dropped), so don't
+    // bother. The correct header for weather.gov is Accept: application/geo+json.
+    var aRes = await fetch(alertUrl, { headers: { 'Accept': 'application/geo+json' } });
+    if(!aRes.ok) throw new Error('weather.gov ' + aRes.status);
     var aData = await aRes.json();
     var hasSCA = false;
     if(aData.features && aData.features.length > 0) {
@@ -1124,13 +1141,16 @@ async function fetchLiveData() {
     results.sca = true;
     addSourceBadge('NOAA Alerts'+(hasSCA?' (SCA ACTIVE)':''), !hasSCA);
   } catch(e) {
-    console.error('NOAA alerts failed:', e);
-    addSourceBadge('NOAA Alerts', false);
+    console.error('NOAA alerts failed (non-fatal):', e);
+    addSourceBadge('NOAA Alerts — offline', false);
   }
 
   // ── UPDATE STATUS
+  // Core conditions come from Open-Meteo marine+wind. NOAA alerts (sca) and
+  // CoastWatch Chl-a are SUPPLEMENTARY — they flake often (rate limits, cloud
+  // gaps) and must NOT drag the whole dashboard to PARTIAL when they do.
   var anyOk  = results.marine || results.wind || results.chla || results.sca;
-  var allOk  = results.marine && results.wind && results.sca;
+  var allOk  = results.marine && results.wind;
   var state  = allOk ? 'ok' : anyOk ? 'partial' : 'error';
   var msg    = allOk ? 'live' : anyOk ? 'partial' : 'fetch failed';
   setLiveStatus(state, msg);
